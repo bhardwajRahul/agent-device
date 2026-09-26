@@ -56,7 +56,10 @@ const sessions = {
   set: () => {},
 } satisfies CommandSessionStore;
 
-test('internal command runtime skeleton is available', async () => {
+// A runtime built without a policy lands on `restrictedCommandPolicy()`, not the local one. No
+// other seam asserts that fallback, so flipping it in the factory must fail here. The refusal a
+// restricted policy raises for a local path is owned by contact-sheet.test.ts on the io-policy seam.
+test('a runtime built with no policy defaults to the restricted policy', async () => {
   const device: AgentDevice = createAgentDevice({
     backend,
     artifacts,
@@ -64,13 +67,6 @@ test('internal command runtime skeleton is available', async () => {
 
   assert.equal(device.backend.platform, 'ios');
   assert.equal(device.policy.allowLocalInputPaths, false);
-  assert.equal(typeof device.capture.screenshot, 'function');
-  assert.equal(typeof device.interactions.click, 'function');
-  assert.equal(typeof device.system.back, 'function');
-  assert.equal(typeof device.apps.open, 'function');
-  assert.equal(typeof device.admin.install, 'function');
-  assert.equal(typeof device.recording.record, 'function');
-  assert.equal(typeof device.observability.logs, 'function');
   const result = await device.capture.screenshot({});
   assert.equal(result.path, '/tmp/path.png');
 });
