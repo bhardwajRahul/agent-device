@@ -33,7 +33,11 @@ import { runCmd } from '@agent-device/host-kit/command';
 import { retryWithPolicy } from '@agent-device/host-kit/retry';
 import { assertRejectsAppError } from '../../__tests__/app-error.ts';
 import { withFakeAppleTool, type FakeAppleToolResponse } from '../../__tests__/fake-apple-tool.ts';
-import { IOS_TEST_SIMULATOR, MACOS_TEST_DEVICE } from './apple-core-stub-helpers.ts';
+import {
+  IOS_TEST_SIMULATOR,
+  MACOS_TEST_DEVICE,
+  TVOS_TEST_SIMULATOR,
+} from './apple-core-stub-helpers.ts';
 
 const mockRunCmd = vi.mocked(runCmd);
 const mockRetryWithPolicy = vi.mocked(retryWithPolicy);
@@ -63,98 +67,146 @@ function unexpectedArgs(args: string[]): FakeAppleToolResponse {
   return { stderr: `unexpected xcrun args: ${args.join(' ')}`, exitCode: 1 };
 }
 
-test('setIosSetting faceid match uses simctl biometric match', async () => {
-  await withFakeAppleTool(
-    (args) => {
-      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
-      if (args.join(' ') === 'simctl biometric sim-1 match face') return '';
-      return unexpectedArgs(args);
-    },
-    async ({ calls }) => {
-      await setIosSetting(IOS_TEST_SIMULATOR, 'faceid', 'match');
-      const flat = calls.map((args) => args.join(' '));
-      assert.equal(flat.includes('simctl biometric sim-1 match face'), true, flat.join('; '));
-    },
-  );
-});
+const FACEID_MATCH_ARGS = 'simctl spawn sim-1 notifyutil -p com.apple.BiometricKit_Sim.pearl.match';
+const FACEID_NONMATCH_ARGS =
+  'simctl spawn sim-1 notifyutil -p com.apple.BiometricKit_Sim.pearl.nomatch';
+const TOUCHID_MATCH_ARGS =
+  'simctl spawn sim-1 notifyutil -p com.apple.BiometricKit_Sim.fingerTouch.match';
+const ENROLL_ARGS =
+  'simctl spawn sim-1 notifyutil -s com.apple.BiometricKit.enrollmentChanged 1 -p com.apple.BiometricKit.enrollmentChanged';
+const UNENROLL_ARGS =
+  'simctl spawn sim-1 notifyutil -s com.apple.BiometricKit.enrollmentChanged 0 -p com.apple.BiometricKit.enrollmentChanged';
 
-test('setIosSetting faceid retries alternate biometric argument order', async () => {
+async function collectBiometricCalls(
+  setting: 'faceid' | 'touchid',
+  state: string,
+): Promise<string[]> {
+  const calls: string[] = [];
   await withFakeAppleTool(
     (args) => {
       if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
-      if (args.join(' ') === 'simctl biometric sim-1 match face') return { exitCode: 2 };
-      if (args.join(' ') === 'simctl biometric match sim-1 face') return '';
+      if (args[0] === 'simctl' && args[1] === 'spawn') {
+        calls.push(args.join(' '));
+        if (args.includes('-g')) {
+          return `com.apple.BiometricKit.enrollmentChanged ${state === 'enroll' ? '1' : '0'}\n`;
+        }
+        return '';
+      }
       return unexpectedArgs(args);
-    },
-    async ({ calls }) => {
-      await setIosSetting(IOS_TEST_SIMULATOR, 'faceid', 'match');
-      const flat = calls.map((args) => args.join(' '));
-      assert.equal(flat.includes('simctl biometric sim-1 match face'), true, flat.join('; '));
-      assert.equal(flat.includes('simctl biometric match sim-1 face'), true, flat.join('; '));
-    },
-  );
-});
-
-test('setIosSetting touchid match uses simctl biometric match finger', async () => {
-  await withFakeAppleTool(
-    (args) => {
-      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
-      if (args.join(' ') === 'simctl biometric sim-1 match finger') return '';
-      return unexpectedArgs(args);
-    },
-    async ({ calls }) => {
-      await setIosSetting(IOS_TEST_SIMULATOR, 'touchid', 'match');
-      const flat = calls.map((args) => args.join(' '));
-      assert.equal(flat.includes('simctl biometric sim-1 match finger'), true, flat.join('; '));
-    },
-  );
-});
-
-test('setIosSetting touchid retries touch modality when finger fails', async () => {
-  await withFakeAppleTool(
-    (args) => {
-      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
-      if (args.join(' ') === 'simctl biometric sim-1 match finger') return { exitCode: 2 };
-      if (args.join(' ') === 'simctl biometric match sim-1 finger') return { exitCode: 2 };
-      if (args.join(' ') === 'simctl biometric sim-1 match touch') return '';
-      return unexpectedArgs(args);
-    },
-    async ({ calls }) => {
-      await setIosSetting(IOS_TEST_SIMULATOR, 'touchid', 'match');
-      const flat = calls.map((args) => args.join(' '));
-      assert.equal(flat.includes('simctl biometric sim-1 match finger'), true, flat.join('; '));
-      assert.equal(flat.includes('simctl biometric match sim-1 finger'), true, flat.join('; '));
-      assert.equal(flat.includes('simctl biometric sim-1 match touch'), true, flat.join('; '));
-    },
-  );
-});
-
-test('setIosSetting touchid reports unsupported when simctl biometric is unavailable', async () => {
-  await withFakeAppleTool(
-    (args) => {
-      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
-      return { stderr: 'unknown subcommand biometric', exitCode: 1 };
     },
     async () => {
-      await assertRejectsAppError(() => setIosSetting(IOS_TEST_SIMULATOR, 'touchid', 'match'), {
+      await setIosSetting(IOS_TEST_SIMULATOR, setting, state);
+    },
+  );
+  return calls;
+}
+
+test('setIosSetting faceid match posts the BiometricKit_Sim pearl match notification', async () => {
+  assert.deepEqual(await collectBiometricCalls('faceid', 'match'), [FACEID_MATCH_ARGS]);
+});
+
+test('setIosSetting faceid nonmatch posts the BiometricKit_Sim pearl nomatch notification', async () => {
+  assert.deepEqual(await collectBiometricCalls('faceid', 'nonmatch'), [FACEID_NONMATCH_ARGS]);
+});
+
+test('setIosSetting touchid match posts the BiometricKit_Sim fingerTouch match notification', async () => {
+  assert.deepEqual(await collectBiometricCalls('touchid', 'match'), [TOUCHID_MATCH_ARGS]);
+});
+
+const READ_ENROLLMENT_ARGS =
+  'simctl spawn sim-1 notifyutil -g com.apple.BiometricKit.enrollmentChanged';
+
+test('setIosSetting biometric enroll sets enrollmentChanged, posts it, then reads it back', async () => {
+  assert.deepEqual(await collectBiometricCalls('faceid', 'enroll'), [
+    ENROLL_ARGS,
+    READ_ENROLLMENT_ARGS,
+  ]);
+  assert.deepEqual(await collectBiometricCalls('touchid', 'unenroll'), [
+    UNENROLL_ARGS,
+    READ_ENROLLMENT_ARGS,
+  ]);
+});
+
+test('setIosSetting biometric enroll fails when the read-back state did not change', async () => {
+  await withFakeAppleTool(
+    (args) => {
+      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
+      if (args.includes('-g')) return 'com.apple.BiometricKit.enrollmentChanged 0\n';
+      if (args[0] === 'simctl' && args[1] === 'spawn') return '';
+      return unexpectedArgs(args);
+    },
+    async () => {
+      await assert.rejects(
+        () => setIosSetting(IOS_TEST_SIMULATOR, 'faceid', 'enroll'),
+        (error: unknown) => {
+          assert.ok(error instanceof AppError);
+          assert.equal(error.code, 'COMMAND_FAILED');
+          const attempts = (error.details as { attempts: Array<{ args: string }> }).attempts;
+          assert.equal(attempts[0]?.args, READ_ENROLLMENT_ARGS);
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test('setIosSetting biometric refuses an Apple TV simulator before posting anything', async () => {
+  await withFakeAppleTool(
+    (args) => {
+      if (isSimctlListDevices(args)) {
+        return JSON.stringify({
+          devices: {
+            'com.apple.CoreSimulator.SimRuntime.tvOS-18-0': [
+              { udid: 'tvos-sim-1', state: 'Booted' },
+            ],
+          },
+        });
+      }
+      return unexpectedArgs(args);
+    },
+    async () => {
+      await assertRejectsAppError(() => setIosSetting(TVOS_TEST_SIMULATOR, 'faceid', 'match'), {
         code: 'UNSUPPORTED_OPERATION',
-        message: /Touch ID simulation is not supported/,
+        message: /supported on iOS and iPadOS simulators/,
       });
     },
   );
 });
 
-test('setIosSetting touchid keeps COMMAND_FAILED for operational failures', async () => {
+test('setIosSetting biometric rejects an unknown state before spawning anything', async () => {
+  await withFakeAppleTool(
+    (args) => {
+      if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
+      return unexpectedArgs(args);
+    },
+    async () => {
+      await assertRejectsAppError(() => setIosSetting(IOS_TEST_SIMULATOR, 'faceid', 'toggle'), {
+        code: 'INVALID_ARGS',
+        message: /Use match\|nonmatch\|enroll\|unenroll/,
+      });
+    },
+  );
+});
+
+test('setIosSetting touchid reports COMMAND_FAILED with the notifyutil attempt when the post fails', async () => {
   await withFakeAppleTool(
     (args) => {
       if (isSimctlListDevices(args)) return BOOTED_SIM_LIST_JSON;
       return { stderr: 'Failed to boot simulator service', exitCode: 1 };
     },
     async () => {
-      await assertRejectsAppError(() => setIosSetting(IOS_TEST_SIMULATOR, 'touchid', 'match'), {
-        code: 'COMMAND_FAILED',
-        message: /Failed to simulate touchid/,
-      });
+      await assert.rejects(
+        () => setIosSetting(IOS_TEST_SIMULATOR, 'touchid', 'match'),
+        (error: unknown) => {
+          assert.ok(error instanceof AppError);
+          assert.equal(error.code, 'COMMAND_FAILED');
+          assert.match(error.message, /Failed to simulate touchid/);
+          const attempts = (error.details as { attempts: Array<{ args: string }> }).attempts;
+          assert.equal(attempts.length, 1);
+          assert.equal(attempts[0]?.args, TOUCHID_MATCH_ARGS);
+          return true;
+        },
+      );
     },
   );
 });
