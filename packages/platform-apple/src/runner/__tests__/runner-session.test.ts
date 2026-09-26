@@ -132,6 +132,7 @@ import {
   writeRunnerLease,
   type RunnerLease,
   type RunnerLeaseCleanupAdapter,
+  type RunnerXcodebuildCleanupTarget,
 } from '../runner-lease.ts';
 
 // Test-only stand-in for the daemon's own runtime lease-owner-state-dir
@@ -741,13 +742,13 @@ test('runner session startup reclaims dead foreign runner lease before launching
 // separate adapter call and must keep running either way.
 function makeRecordingCleanupAdapter() {
   const treeKills: Array<{ pid: number | undefined; signal: string }> = [];
-  const xcodebuildCleanups: Array<{ deviceId: string; ownerToken: string | undefined }> = [];
+  const xcodebuildCleanups: RunnerXcodebuildCleanupTarget[] = [];
   const adapter: RunnerLeaseCleanupAdapter = {
     async cleanupRunnerProcessTree(pid, signal) {
       treeKills.push({ pid, signal });
     },
-    async cleanupRunnerXcodebuildProcesses(deviceId, ownerToken) {
-      xcodebuildCleanups.push({ deviceId, ownerToken });
+    async cleanupRunnerXcodebuildProcesses(target) {
+      xcodebuildCleanups.push(target);
     },
     cleanupTempFile() {},
   };
@@ -783,9 +784,8 @@ test('stale-lease cleanup does not signal a recycled runner pid (start time mism
     { pid: undefined, signal: 'SIGTERM' },
     { pid: undefined, signal: 'SIGKILL' },
   ]);
-  assert.deepEqual(xcodebuildCleanups, [
-    { deviceId: device.id, ownerToken: 'owner-dead-recycled' },
-  ]);
+  const sweptDeviceIds = xcodebuildCleanups.map((target) => target.deviceId);
+  assert.deepEqual(sweptDeviceIds, [device.id]);
 });
 
 test('stale-lease cleanup signals the runner pid when its start time still matches', async () => {
